@@ -1,108 +1,134 @@
-# PharmaRoute: Local Metadata-Routed RAG Pipeline
+# PharmaRoute: Multimodal Document Intelligence & RAG Chatbot
 
-A privacy-preserving, on-device Retrieval-Augmented Generation (RAG) system engineered to segment, classify, and query bundled pharmaceutical PDFs and regulatory dossiers. Powered by quantized local LLM execution (**Mistral-7B-Instruct-v0.2** via `llama-cpp-python`) and **LlamaIndex**, the pipeline automates document boundary detection and uses metadata-filtered vector retrieval to eliminate cross-document hallucination.
+An enterprise-grade, privacy-first Retrieval-Augmented Generation (RAG) system designed to ingest, parse, segment, and query complex pharmaceutical dossiers and regulatory filings. Built with an **OCR-fallback pipeline (Tesseract + OpenCV)**, **embedding-based document segmentation**, and an on-device quantized LLM (**Mistral-7B-Instruct-v0.2** via `llama-cpp-python`), this application delivers grounded answers with strict citation tracking, confidence scoring, and automated fallback routing.
 
 ---
 
 ## Technical Overview
 
-Pharmaceutical submissions often arrive as single, monolithic PDF bundles containing dozens of disparate document types (e.g., Certificates of Analysis, BSE/TSE Declarations, Packaging Specs, Chain of Custody). Standard naive RAG pipelines index these arbitrarily, yielding noisy chunk retrieval across unrelated documents.
+Pharmaceutical supply chains and regulatory operations rely on massive multi-document PDFs that combine pristine digital text with low-resolution scanned forms, certificates, and declarations. Naive RAG setups fail on these bundles due to image-only pages, ambiguous document transitions, and irrelevant context contamination across sections.
 
-This pipeline resolves this through a two-stage LLM-assisted workflow:
-1. **Dynamic Page-Boundary Classification:** Iterates through raw PDF pages, prompting Mistral-7B with zero-shot classification to detect logical boundaries between distinct document types without manual human splitting.
-2. **Metadata-Filtered Query Routing:** When a user poses a question, an intent-routing prompt identifies the specific target document type and applies strict `MetadataFilters` during vector search. This restricts nearest-neighbor search exclusively to valid source sub-documents.
-3. **Local, Air-Gapped Inference:** Operates completely on local GPU hardware via GGUF 4-bit quantization, meeting strict compliance and data-privacy standards required for proprietary enterprise data.
+This system addresses these challenges with an end-to-end local architecture:
+1. **Hybrid Ingestion (Digital + Adaptive OCR):** Extracts digital text via `PyPDF2`, automatically falling back to `pdf2image` and `pytesseract` with Gaussian adaptive binarization for scanned pages.
+2. **Embedding-Based Semantic Segmentation:** Uses dense embedding cosine distance (`bge-small-en-v1.5`) across sequential pages to detect document transitions, isolating logical documents (e.g., separating an SDS from a Certificate of Quality).
+3. **Zero-Shot Document Classification:** Prompts quantized Mistral-7B to categorize each segmented section across 9 domain-specific classes (Packaging Specs, BSE/TSE, Chain of Custody, SDS, etc.).
+4. **Metadata-Routed Vector Search with Global Fallback:** Predicts the target document type based on user query intent, retrieving chunks under a strict `MetadataFilter`. If no direct matches exist, the retriever triggers an automatic fallback across the entire document corpus.
+5. **Grounded Synthesis with Source Provenance:** Uses a constrained citation prompt template forcing `[Chunk X, Pages Y-Z]` source attribution, confidence metrics, and defensive stop tokens to block LLM dialogue leakage.
 
 ---
 
 ## Architecture Flow
 
 ```text
-Monolithic PDF
-      │
-      ▼
-[ PyPDF2 Page Extraction ]
-      │
-      ▼
-[ Mistral 7B Boundary Classifier ] ──► Detects doc transitions & tags metadata
-      │
-      ▼
-[ LangChain Recursive Splitter ]  ──► 512-token chunks (100 overlap) + rich metadata
-      │
-      ▼
-[ BAAI/bge-small-en-v1.5 ]        ──► Dense embeddings into LlamaIndex VectorStore
-      │
-      ├────────────────────────────────────────┐
-      ▼                                        ▼
-User Query ──► [ Query Intent Classifier ] ──► [ Metadata-Filtered Retriever ]
-                                                       │
-                                                       ▼
-                                            [ Compact Synthesizer ]
-                                                       │
-                                                       ▼
-                                              Structured Answer + Audit Context
+Bundled PDF File (Digital or Scanned)
+                │
+                ▼
+   [ Text vs. Scanned Page Check ]
+     ├── Digital ──► PyPDF2 Direct Extraction
+     └── Scanned ──► OpenCV Preprocessing (Adaptive Threshold) + Tesseract OCR
+                │
+                ▼
+   [ Semantic Document Segmentation ]
+     └── Cosine Similarity of Page Embeddings (Threshold: 0.75)
+                │
+                ▼
+   [ Mistral-7B Zero-Shot Classifier ]
+     └── Labels logical documents (SDS, COQ, BSE/TSE, Packaging, etc.)
+                │
+                ▼
+   [ Recursive Character Text Splitter ]
+     └── 512-token chunks (100 overlap) + Page/Type Metadata
+                │
+                ▼
+   [ BGE-Small Vector Store Index ]
+                │
+ ┌──────────────┴────────────────────────────────┐
+ │ Query Flow                                    │
+ ▼                                               ▼
+User Query ──► Intent Classifier ──► Filtered Retriever (doc_type == Target)
+                                                 │
+                                       (No Chunks Found?)
+                                         ├── Yes ──► Global Fallback Retriever
+                                         └── No  ──► Retain Filtered Nodes
+                                                 │
+                                                 ▼
+                                     [ Compact QA Synthesizer ]
+                                                 │
+                                                 ▼
+                                    Gradio Multi-Turn Chatbot
+                             (Answer + [Chunk, Page] + Confidence %)
 ```
 
 ---
 
 ## Key Features
 
-- **Automated Logical Document Segmentation:** Splits bundled PDF files into discrete logical units using sequential page context comparisons (`is_same_document`).
-- **Precision Metadata Filtering:** Bypasses vector noise by applying deterministic metadata filters (`FilterOperator.EQ`) at retrieval time based on query intent.
-- **Zero Cloud Leakage:** Fully local execution running quantized Mistral 7B (Q4_K_M) alongside local HuggingFace embeddings (`bge-small-en-v1.5`).
-- **Interactive Inspection UI:** Gradio interface featuring real-time index feedback, predicted routing paths, and retrieved source chunks with exact page ranges for auditability.
+- **Adaptive OCR Preprocessing:** Automatically applies grayscale conversion and Gaussian adaptive thresholding (`cv2.adaptiveThreshold`) to resolve noisy scans, fax artifacts, and low-contrast text.
+- **Semantic Boundary Detection:** Replaces rigid regex/page rules with cosine similarity transitions on dense vector embeddings to segment combined PDF batches dynamically.
+- **Fail-Safe Retrieval Routing:** Mitigates routing misclassifications by defaulting to an unfiltered similarity search if filtered metadata queries yield empty nodes.
+- **Strict Provenance & Guardrails:** Enforces `[Chunk X, Pages Y-Z]` inline citations and truncates extraneous generation loops via LLM stop tokens (`["Question:", "Q:"]`).
+- **Interactive Multi-Turn Chatbot:** Features an updated Gradio interface supporting continuous chat history, session clearing, and retrieval confidence statistics per response.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology | Purpose |
+| Domain | Technology | Purpose |
 |---|---|---|
-| **LLM Engine** | Mistral-7B-Instruct-v0.2 (GGUF Q4_K_M) | Local inference via `llama-cpp-python` with full GPU layer offloading |
-| **Orchestration** | LlamaIndex (`llama-index-core`) | Vector store management, index construction, and structured synthesis |
-| **Embeddings** | `BAAI/bge-small-en-v1.5` | Dense vector representation optimized for semantic search |
-| **Chunking** | `langchain-text-splitters` | Document-level chunking with boundary retention |
-| **Ingestion** | `PyPDF2` | In-memory text extraction per PDF page |
-| **User Interface** | Gradio | Reactive dashboard for file processing, querying, and provenance checks |
+| **Local LLM** | Mistral-7B-Instruct-v0.2 (GGUF Q4_K_M) | 4-bit quantized local generation via `llama-cpp-python` with full GPU layer offload (`n_gpu_layers: -1`) |
+| **Embeddings** | `BAAI/bge-small-en-v1.5` | Lightweight, high-accuracy semantic embeddings for boundary detection and vector search |
+| **Framework** | LlamaIndex (`llama-index-core`) | Orchestration for chunk metadata schema, vector indexing, and compact response synthesis |
+| **Vision & OCR** | OpenCV, Tesseract OCR, `pdf2image` | Optical character recognition pipeline with image binarization for scanned filings |
+| **PDF Extraction** | `PyPDF2` | Rapid digital-layer text extraction |
+| **Interface** | Gradio | Conversational web UI with real-time indexing logs and multi-turn state management |
 
 ---
 
 ## Setup & Local Installation
 
 ### Prerequisites
+- Linux / Ubuntu / Google Colab (with NVIDIA GPU runtime)
 - Python 3.10+
-- NVIDIA GPU with CUDA 12.1+ support (recommended for full layer offload)
+- System packages: `poppler-utils` and `tesseract-ocr`
 
-### 1. Clone & Environment Setup
+### 1. System Dependencies
 ```bash
-git clone [https://github.com/your-username/pharma-doc-router-rag.git](https://github.com/your-username/pharma-doc-router-rag.git)
-cd pharma-doc-router-rag
+sudo apt-get update -qq
+sudo apt-get install -y -qq poppler-utils tesseract-ocr
+```
+
+### 2. Environment Setup
+```bash
+git clone [https://github.com/your-username/pharma-doc-intelligence-rag.git](https://github.com/your-username/pharma-doc-intelligence-rag.git)
+cd pharma-doc-intelligence-rag
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-### 2. Install Dependencies
-Install pre-compiled CUDA wheels for `llama-cpp-python` to ensure GPU acceleration:
+### 3. Install Python Dependencies
+Install pre-compiled CUDA wheels for `llama-cpp-python` to ensure GPU offloading:
 
 ```bash
-# CUDA 12.2 / 12.x configuration
+# Pre-built CUDA 12.2 / 12.x wheels
 pip install --no-cache-dir --only-binary llama-cpp-python llama-cpp-python \
   --extra-index-url [https://abetlen.github.io/llama-cpp-python/whl/cu122](https://abetlen.github.io/llama-cpp-python/whl/cu122)
 
-# Supporting libraries
-pip install PyPDF2 langchain-text-splitters llama-index llama-index-embeddings-huggingface llama-index-llms-llama-cpp gradio "uvicorn<0.30.0"
+# Core libraries
+pip install PyPDF2 langchain-text-splitters llama-index \
+  llama-index-embeddings-huggingface llama-index-llms-llama-cpp \
+  gradio pdf2image pytesseract Pillow opencv-python-headless "uvicorn<0.30.0"
 ```
 
-### 3. Run the Application
+### 4. Run the Pipeline
 ```bash
 python app.py
 ```
-Access the Gradio web interface at `http://127.0.0.1:7860` (or via the generated public link).
+The script will check for the quantized GGUF model locally, download it if missing (~4.1 GB), initialize CUDA offloading, and launch the Gradio server.
 
 ---
 
-## Design Decisions & Trade-Offs
+## Core Engineering Decisions
 
-- **Hierarchical Classification vs. Single-Pass Indexing:** Running classification per page boundary incurs upfront indexing latency, but significantly cuts down hallucination and retrieval latency during query evaluation.
-- **Compact Synthesizer:** Configured `ResponseMode.COMPACT` inside LlamaIndex to maximize context window utility within Mistral's 4,096 context token limit while maintaining strict adherence to retrieved text.
-- **GGUF Q4_K_M Quantization:** Selected to enable full offload of all 33 model layers to standard consumer/enterprise GPUs (~6 GB VRAM consumption) without noticeable loss in classification accuracy.
+- **Hybrid OCR Pipeline:** Running OCR on every page degrades performance. The conditional check (`extract_text_from_page`) runs fast digital extraction first and triggers OpenCV/Tesseract only when character yields fall to zero.
+- **Adaptive Document Boundaries:** Bundled PDF page lengths fluctuate across vendors. Calculating semantic drift between adjacent page prefixes (`similarity < 0.75`) dynamically isolates logical sub-documents without manual rule authoring.
+- **Filtered-to-Global Query Fallback:** Metadata filtering eliminates cross-document hallucinations, but strict filters can cause false negatives if the user's intent prediction is slightly off. The automated fallback guarantees the retriever still answers questions from context even when document-type predictions misfire.

@@ -4,6 +4,14 @@ An enterprise-grade, privacy-first Retrieval-Augmented Generation (RAG) system d
 
 ---
 
+## Demo
+
+
+https://github.com/user-attachments/assets/d0f9148a-2099-476d-85a6-f9149ddddc7c
+
+
+---
+
 ## Technical Overview
 
 Pharmaceutical supply chains and regulatory operations rely on massive multi-document PDFs that combine pristine digital text with low-resolution scanned forms, certificates, and declarations. Naive RAG setups fail on these bundles due to image-only pages, ambiguous document transitions, and irrelevant context contamination across sections.
